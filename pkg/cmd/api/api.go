@@ -14,8 +14,11 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/MakeNowJust/heredoc"
+	"github.com/cli/cli/api"
+	"github.com/cli/cli/internal/config"
 	"github.com/cli/cli/internal/ghinstance"
 	"github.com/cli/cli/internal/ghrepo"
 	"github.com/cli/cli/pkg/cmdutil"
@@ -35,10 +38,15 @@ type ApiOptions struct {
 	MagicFields         []string
 	RawFields           []string
 	RequestHeaders      []string
+	Previews            []string
 	ShowResponseHeaders bool
 	Paginate            bool
 	Silent              bool
+	Template            string
+	CacheTTL            time.Duration
+	FilterOutput        string
 
+	Config     func() (config.Config, error)
 	HttpClient func() (*http.Client, error)
 	BaseRepo   func() (ghrepo.Interface, error)
 	Branch     func() (string, error)
@@ -47,6 +55,7 @@ type ApiOptions struct {
 func NewCmdApi(f *cmdutil.Factory, runF func(*ApiOptions) error) *cobra.Command {
 	opts := ApiOptions{
 		IO:         f.IOStreams,
+		Config:     f.Config,
 		HttpClient: f.HttpClient,
 		BaseRepo:   f.BaseRepo,
 		Branch:     f.Branch,
@@ -55,44 +64,83 @@ func NewCmdApi(f *cmdutil.Factory, runF func(*ApiOptions) error) *cobra.Command 
 	cmd := &cobra.Command{
 		Use:   "api <endpoint>",
 		Short: "Make an authenticated GitHub API request",
-		Long: `Makes an authenticated HTTP request to the GitHub API and prints the response.
+		Long: heredoc.Docf(`
+			Makes an authenticated HTTP request to the GitHub API and prints the response.
 
-The endpoint argument should either be a path of a GitHub API v3 endpoint, or
-"graphql" to access the GitHub API v4.
+			The endpoint argument should either be a path of a GitHub API v3 endpoint, or
+			"graphql" to access the GitHub API v4.
 
-Placeholder values ":owner", ":repo", and ":branch" in the endpoint argument will
-get replaced with values from the repository of the current directory.
+			Placeholder values ":owner", ":repo", and ":branch" in the endpoint argument will
+			get replaced with values from the repository of the current directory.
 
-The default HTTP request method is "GET" normally and "POST" if any parameters
-were added. Override the method with '--method'.
+			The default HTTP request method is "GET" normally and "POST" if any parameters
+			were added. Override the method with %[1]s--method%[1]s.
 
-Pass one or more '--raw-field' values in "key=value" format to add
-JSON-encoded string parameters to the POST body.
+			Pass one or more %[1]s--raw-field%[1]s values in "key=value" format to add
+			JSON-encoded string parameters to the POST body.
 
-The '--field' flag behaves like '--raw-field' with magic type conversion based
-on the format of the value:
+			The %[1]s--field%[1]s flag behaves like %[1]s--raw-field%[1]s with magic type conversion based
+			on the format of the value:
 
-- literal values "true", "false", "null", and integer numbers get converted to
-  appropriate JSON types;
-- placeholder values ":owner", ":repo", and ":branch" get populated with values
-  from the repository of the current directory;
-- if the value starts with "@", the rest of the value is interpreted as a
-  filename to read the value from. Pass "-" to read from standard input.
+			- literal values "true", "false", "null", and integer numbers get converted to
+			  appropriate JSON types;
+			- placeholder values ":owner", ":repo", and ":branch" get populated with values
+			  from the repository of the current directory;
+			- if the value starts with "@", the rest of the value is interpreted as a
+			  filename to read the value from. Pass "-" to read from standard input.
 
-For GraphQL requests, all fields other than "query" and "operationName" are
-interpreted as GraphQL variables.
+			For GraphQL requests, all fields other than "query" and "operationName" are
+			interpreted as GraphQL variables.
 
-Raw request body may be passed from the outside via a file specified by '--input'.
-Pass "-" to read from standard input. In this mode, parameters specified via
-'--field' flags are serialized into URL query parameters.
+			Raw request body may be passed from the outside via a file specified by %[1]s--input%[1]s.
+			Pass "-" to read from standard input. In this mode, parameters specified via
+			%[1]s--field%[1]s flags are serialized into URL query parameters.
 
-In '--paginate' mode, all pages of results will sequentially be requested until
-there are no more pages of results. For GraphQL requests, this requires that the
-original query accepts an '$endCursor: String' variable and that it fetches the
-'pageInfo{ hasNextPage, endCursor }' set of fields from a collection.`,
+			In %[1]s--paginate%[1]s mode, all pages of results will sequentially be requested until
+			there are no more pages of results. For GraphQL requests, this requires that the
+			original query accepts an %[1]s$endCursor: String%[1]s variable and that it fetches the
+			%[1]spageInfo{ hasNextPage, endCursor }%[1]s set of fields from a collection.
+
+			The %[1]s--jq%[1]s option accepts a query in jq syntax and will print only the resulting
+			values that match the query. This is equivalent to piping the output to %[1]sjq -r%[1]s,
+			but does not require the jq utility to be installed on the system. To learn more
+			about the query syntax, see: https://stedolan.github.io/jq/manual/v1.6/
+
+			With %[1]s--template%[1]s, the provided Go template is rendered using the JSON data as input.
+			For the syntax of Go templates, see: https://golang.org/pkg/text/template/
+
+			The following functions are available in templates:
+			- %[1]scolor <style>, <input>%[1]s: colorize input using https://github.com/mgutz/ansi
+			- %[1]sautocolor%[1]s: like %[1]scolor%[1]s, but only emits color to terminals
+			- %[1]stimefmt <format> <time>%[1]s: formats a timestamp using Go's Time.Format function
+			- %[1]stimeago <time>%[1]s: renders a timestamp as relative to now
+			- %[1]spluck <field> <list>%[1]s: collects values of a field from all items in the input
+			- %[1]sjoin <sep> <list>%[1]s: joins values in the list using a separator
+		`, "`"),
 		Example: heredoc.Doc(`
+			# list releases in the current repository
 			$ gh api repos/:owner/:repo/releases
 
+			# post an issue comment
+			$ gh api repos/:owner/:repo/issues/123/comments -f body='Hi from CLI'
+
+			# add parameters to a GET request
+			$ gh api -X GET search/issues -f q='repo:cli/cli is:open remote'
+
+			# set a custom HTTP header
+			$ gh api -H 'Accept: application/vnd.github.v3.raw+json' ...
+
+			# opt into GitHub API previews
+			$ gh api --preview baptiste,nebula ...
+
+			# print only specific fields from the response
+			$ gh api repos/:owner/:repo/issues --jq '.[].title'
+
+			# use a template for the output
+			$ gh api repos/:owner/:repo/issues --template \
+			  '{{range .}}{{.title}} ({{.labels | pluck "name" | join ", " | color "yellow"}}){{"\n"}}{{end}}'
+
+			# list releases with GraphQL
 			$ gh api graphql -F owner=':owner' -F name=':repo' -f query='
 			  query($name: String!, $owner: String!) {
 			    repository(owner: $owner, name: $name) {
@@ -103,6 +151,7 @@ original query accepts an '$endCursor: String' variable and that it fetches the
 			  }
 			'
 
+			# list all repositories for a user
 			$ gh api graphql --paginate -f query='
 			  query($endCursor: String) {
 			    viewer {
@@ -119,9 +168,11 @@ original query accepts an '$endCursor: String' variable and that it fetches the
 		`),
 		Annotations: map[string]string{
 			"help:environment": heredoc.Doc(`
-				GH_TOKEN, GITHUB_TOKEN (in order of precedence): an authentication token for github.com API requests.
+				GH_TOKEN, GITHUB_TOKEN (in order of precedence): an authentication token for
+				github.com API requests.
 
-				GH_ENTERPRISE_TOKEN, GITHUB_ENTERPRISE_TOKEN (in order of precedence): an authentication token for API requests to GitHub Enterprise.
+				GH_ENTERPRISE_TOKEN, GITHUB_ENTERPRISE_TOKEN (in order of precedence): an
+				authentication token for API requests to GitHub Enterprise.
 
 				GH_HOST: make the request to a GitHub host other than github.com.
 			`),
@@ -133,15 +184,29 @@ original query accepts an '$endCursor: String' variable and that it fetches the
 
 			if c.Flags().Changed("hostname") {
 				if err := ghinstance.HostnameValidator(opts.Hostname); err != nil {
-					return &cmdutil.FlagError{Err: fmt.Errorf("error parsing --hostname: %w", err)}
+					return &cmdutil.FlagError{Err: fmt.Errorf("error parsing `--hostname`: %w", err)}
 				}
 			}
 
 			if opts.Paginate && !strings.EqualFold(opts.RequestMethod, "GET") && opts.RequestPath != "graphql" {
-				return &cmdutil.FlagError{Err: errors.New(`the '--paginate' option is not supported for non-GET requests`)}
+				return &cmdutil.FlagError{Err: errors.New("the `--paginate` option is not supported for non-GET requests")}
 			}
-			if opts.Paginate && opts.RequestInputFile != "" {
-				return &cmdutil.FlagError{Err: errors.New(`the '--paginate' option is not supported with '--input'`)}
+
+			if err := cmdutil.MutuallyExclusive(
+				"the `--paginate` option is not supported with `--input`",
+				opts.Paginate,
+				opts.RequestInputFile != "",
+			); err != nil {
+				return err
+			}
+
+			if err := cmdutil.MutuallyExclusive(
+				"only one of `--template`, `--jq`, or `--silent` may be used",
+				opts.Silent,
+				opts.FilterOutput != "",
+				opts.Template != "",
+			); err != nil {
+				return err
 			}
 
 			if runF != nil {
@@ -153,13 +218,17 @@ original query accepts an '$endCursor: String' variable and that it fetches the
 
 	cmd.Flags().StringVar(&opts.Hostname, "hostname", "", "The GitHub hostname for the request (default \"github.com\")")
 	cmd.Flags().StringVarP(&opts.RequestMethod, "method", "X", "GET", "The HTTP method for the request")
-	cmd.Flags().StringArrayVarP(&opts.MagicFields, "field", "F", nil, "Add a parameter of inferred type")
-	cmd.Flags().StringArrayVarP(&opts.RawFields, "raw-field", "f", nil, "Add a string parameter")
-	cmd.Flags().StringArrayVarP(&opts.RequestHeaders, "header", "H", nil, "Add an additional HTTP request header")
+	cmd.Flags().StringArrayVarP(&opts.MagicFields, "field", "F", nil, "Add a typed parameter in `key=value` format")
+	cmd.Flags().StringArrayVarP(&opts.RawFields, "raw-field", "f", nil, "Add a string parameter in `key=value` format")
+	cmd.Flags().StringArrayVarP(&opts.RequestHeaders, "header", "H", nil, "Add a HTTP request header in `key:value` format")
+	cmd.Flags().StringSliceVarP(&opts.Previews, "preview", "p", nil, "Opt into GitHub API previews")
 	cmd.Flags().BoolVarP(&opts.ShowResponseHeaders, "include", "i", false, "Include HTTP response headers in the output")
 	cmd.Flags().BoolVar(&opts.Paginate, "paginate", false, "Make additional HTTP requests to fetch all pages of results")
-	cmd.Flags().StringVar(&opts.RequestInputFile, "input", "", "The file to use as body for the HTTP request")
+	cmd.Flags().StringVar(&opts.RequestInputFile, "input", "", "The `file` to use as body for the HTTP request")
 	cmd.Flags().BoolVar(&opts.Silent, "silent", false, "Do not print the response body")
+	cmd.Flags().StringVarP(&opts.Template, "template", "t", "", "Format the response using a Go template")
+	cmd.Flags().StringVarP(&opts.FilterOutput, "jq", "q", "", "Query to select values from the response using jq syntax")
+	cmd.Flags().DurationVar(&opts.CacheTTL, "cache", 0, "Cache the response, e.g. \"3600s\", \"60m\", \"1h\"")
 	return cmd
 }
 
@@ -199,9 +268,16 @@ func apiRun(opts *ApiOptions) error {
 		}
 	}
 
+	if len(opts.Previews) > 0 {
+		requestHeaders = append(requestHeaders, "Accept: "+previewNamesToMIMETypes(opts.Previews))
+	}
+
 	httpClient, err := opts.HttpClient()
 	if err != nil {
 		return err
+	}
+	if opts.CacheTTL > 0 {
+		httpClient = api.NewCachedClient(httpClient, opts.CacheTTL)
 	}
 
 	headersOutputStream := opts.IO.Out
@@ -215,7 +291,16 @@ func apiRun(opts *ApiOptions) error {
 		defer opts.IO.StopPager()
 	}
 
-	host := ghinstance.OverridableDefault()
+	cfg, err := opts.Config()
+	if err != nil {
+		return err
+	}
+
+	host, err := cfg.DefaultHost()
+	if err != nil {
+		return err
+	}
+
 	if opts.Hostname != "" {
 		host = opts.Hostname
 	}
@@ -283,7 +368,19 @@ func processResponse(resp *http.Response, opts *ApiOptions, headersOutputStream 
 		responseBody = io.TeeReader(responseBody, bodyCopy)
 	}
 
-	if isJSON && opts.IO.ColorEnabled() {
+	if opts.FilterOutput != "" {
+		// TODO: reuse parsed query across pagination invocations
+		err = filterJSON(opts.IO.Out, responseBody, opts.FilterOutput)
+		if err != nil {
+			return
+		}
+	} else if opts.Template != "" {
+		// TODO: reuse parsed template across pagination invocations
+		err = executeTemplate(opts.IO.Out, responseBody, opts.Template, opts.IO.ColorEnabled())
+		if err != nil {
+			return
+		}
+	} else if isJSON && opts.IO.ColorEnabled() {
 		err = jsoncolor.Write(opts.IO.Out, responseBody, "  ")
 	} else {
 		_, err = io.Copy(opts.IO.Out, responseBody)
@@ -489,4 +586,12 @@ func parseErrorResponse(r io.Reader, statusCode int) (io.Reader, string, error) 
 	}
 
 	return bodyCopy, "", nil
+}
+
+func previewNamesToMIMETypes(names []string) string {
+	types := []string{fmt.Sprintf("application/vnd.github.%s-preview+json", names[0])}
+	for _, p := range names[1:] {
+		types = append(types, fmt.Sprintf("application/vnd.github.%s-preview", p))
+	}
+	return strings.Join(types, ", ")
 }

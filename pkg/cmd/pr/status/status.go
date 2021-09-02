@@ -205,7 +205,7 @@ func printPrs(io *iostreams.IOStreams, totalCount int, prs ...api.PullRequest) {
 					if checks.Failing == checks.Total {
 						summary = cs.Red("× All checks failing")
 					} else {
-						summary = cs.Red(fmt.Sprintf("× %d/%d checks failing", checks.Failing, checks.Total))
+						summary = cs.Redf("× %d/%d checks failing", checks.Failing, checks.Total)
 					}
 				} else if checks.Pending > 0 {
 					summary = cs.Yellow("- Checks pending")
@@ -227,6 +227,18 @@ func printPrs(io *iostreams.IOStreams, totalCount int, prs ...api.PullRequest) {
 			} else if reviews.Approved {
 				fmt.Fprint(w, cs.Green("✓ Approved"))
 			}
+
+			if pr.BaseRef.BranchProtectionRule.RequiresStrictStatusChecks {
+				switch pr.MergeStateStatus {
+				case "BEHIND":
+					fmt.Fprintf(w, " %s", cs.Yellow("- Not up to date"))
+				case "UNKNOWN", "DIRTY":
+					// do not print anything
+				default:
+					fmt.Fprintf(w, " %s", cs.Green("✓ Up to date"))
+				}
+			}
+
 		} else {
 			fmt.Fprintf(w, " - %s", shared.StateTitleWithColor(cs, pr))
 		}

@@ -1,6 +1,10 @@
 package shared
 
 import (
+<<<<<<< HEAD
+=======
+	"archive/zip"
+>>>>>>> origin/bad-branch
 	"fmt"
 	"net/url"
 	"strings"
@@ -15,6 +19,7 @@ import (
 
 const (
 	// Run statuses
+<<<<<<< HEAD
 	Queued     = "queued"
 	Completed  = "completed"
 	InProgress = "in_progress"
@@ -54,6 +59,54 @@ type Run struct {
 	JobsURL    string `json:"jobs_url"`
 	HeadCommit Commit `json:"head_commit"`
 	HeadSha    string `json:"head_sha"`
+=======
+	Queued     Status = "queued"
+	Completed  Status = "completed"
+	InProgress Status = "in_progress"
+	Requested  Status = "requested"
+	Waiting    Status = "waiting"
+
+	// Run conclusions
+	ActionRequired Conclusion = "action_required"
+	Cancelled      Conclusion = "cancelled"
+	Failure        Conclusion = "failure"
+	Neutral        Conclusion = "neutral"
+	Skipped        Conclusion = "skipped"
+	Stale          Conclusion = "stale"
+	StartupFailure Conclusion = "startup_failure"
+	Success        Conclusion = "success"
+	TimedOut       Conclusion = "timed_out"
+
+	AnnotationFailure Level = "failure"
+	AnnotationWarning Level = "warning"
+)
+
+type Status string
+type Conclusion string
+type Level string
+
+type Run struct {
+	Name           string
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	Status         Status
+	Conclusion     Conclusion
+	Event          string
+	ID             int
+	HeadBranch     string `json:"head_branch"`
+	JobsURL        string `json:"jobs_url"`
+	HeadCommit     Commit `json:"head_commit"`
+	HeadSha        string `json:"head_sha"`
+	URL            string `json:"html_url"`
+	HeadRepository Repo   `json:"head_repository"`
+}
+
+type Repo struct {
+	Owner struct {
+		Login string
+	}
+	Name string
+>>>>>>> origin/bad-branch
 }
 
 type Commit struct {
@@ -74,9 +127,17 @@ type Job struct {
 	Status      Status
 	Conclusion  Conclusion
 	Name        string
+<<<<<<< HEAD
 	Steps       []Step
 	StartedAt   time.Time `json:"started_at"`
 	CompletedAt time.Time `json:"completed_at"`
+=======
+	Steps       Steps
+	StartedAt   time.Time `json:"started_at"`
+	CompletedAt time.Time `json:"completed_at"`
+	URL         string    `json:"html_url"`
+	RunID       int       `json:"run_id"`
+>>>>>>> origin/bad-branch
 }
 
 type Step struct {
@@ -84,12 +145,25 @@ type Step struct {
 	Status     Status
 	Conclusion Conclusion
 	Number     int
+<<<<<<< HEAD
 }
 
+=======
+	Log        *zip.File
+}
+
+type Steps []Step
+
+func (s Steps) Len() int           { return len(s) }
+func (s Steps) Less(i, j int) bool { return s[i].Number < s[j].Number }
+func (s Steps) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
+
+>>>>>>> origin/bad-branch
 type Annotation struct {
 	JobName   string
 	Message   string
 	Path      string
+<<<<<<< HEAD
 	Level     string `json:"annotation_level"`
 	StartLine int    `json:"start_line"`
 }
@@ -103,6 +177,20 @@ func (a Annotation) Symbol(cs *iostreams.ColorScheme) string {
 		return cs.Yellow("!")
 	default:
 		return "TODO"
+=======
+	Level     Level `json:"annotation_level"`
+	StartLine int   `json:"start_line"`
+}
+
+func AnnotationSymbol(cs *iostreams.ColorScheme, a Annotation) string {
+	switch a.Level {
+	case AnnotationFailure:
+		return cs.FailureIcon()
+	case AnnotationWarning:
+		return cs.WarningIcon()
+	default:
+		return "-"
+>>>>>>> origin/bad-branch
 	}
 }
 
@@ -144,7 +232,40 @@ type RunsPayload struct {
 	WorkflowRuns []Run `json:"workflow_runs"`
 }
 
+<<<<<<< HEAD
 func GetRuns(client *api.Client, repo ghrepo.Interface, limit int) ([]Run, error) {
+=======
+func GetRunsWithFilter(client *api.Client, repo ghrepo.Interface, limit int, f func(Run) bool) ([]Run, error) {
+	path := fmt.Sprintf("repos/%s/actions/runs", ghrepo.FullName(repo))
+	runs, err := getRuns(client, repo, path, 50)
+	if err != nil {
+		return nil, err
+	}
+	filtered := []Run{}
+	for _, run := range runs {
+		if f(run) {
+			filtered = append(filtered, run)
+		}
+		if len(filtered) == limit {
+			break
+		}
+	}
+
+	return filtered, nil
+}
+
+func GetRunsByWorkflow(client *api.Client, repo ghrepo.Interface, limit, workflowID int) ([]Run, error) {
+	path := fmt.Sprintf("repos/%s/actions/workflows/%d/runs", ghrepo.FullName(repo), workflowID)
+	return getRuns(client, repo, path, limit)
+}
+
+func GetRuns(client *api.Client, repo ghrepo.Interface, limit int) ([]Run, error) {
+	path := fmt.Sprintf("repos/%s/actions/runs", ghrepo.FullName(repo))
+	return getRuns(client, repo, path, limit)
+}
+
+func getRuns(client *api.Client, repo ghrepo.Interface, path string, limit int) ([]Run, error) {
+>>>>>>> origin/bad-branch
 	perPage := limit
 	page := 1
 	if limit > 100 {
@@ -156,11 +277,26 @@ func GetRuns(client *api.Client, repo ghrepo.Interface, limit int) ([]Run, error
 	for len(runs) < limit {
 		var result RunsPayload
 
+<<<<<<< HEAD
 		path := fmt.Sprintf("repos/%s/actions/runs?per_page=%d&page=%d", ghrepo.FullName(repo), perPage, page)
 
 		err := client.REST(repo.RepoHost(), "GET", path, nil, &result)
 		if err != nil {
 			// TODO better err handle
+=======
+		parsed, err := url.Parse(path)
+		if err != nil {
+			return nil, err
+		}
+		query := parsed.Query()
+		query.Set("per_page", fmt.Sprintf("%d", perPage))
+		query.Set("page", fmt.Sprintf("%d", page))
+		parsed.RawQuery = query.Encode()
+		pagedPath := parsed.String()
+
+		err = client.REST(repo.RepoHost(), "GET", pagedPath, nil, &result)
+		if err != nil {
+>>>>>>> origin/bad-branch
 			return nil, err
 		}
 
@@ -174,6 +310,14 @@ func GetRuns(client *api.Client, repo ghrepo.Interface, limit int) ([]Run, error
 				break
 			}
 		}
+<<<<<<< HEAD
+=======
+
+		if len(result.WorkflowRuns) < perPage {
+			break
+		}
+
+>>>>>>> origin/bad-branch
 		page++
 	}
 
@@ -198,6 +342,7 @@ func GetJobs(client *api.Client, repo ghrepo.Interface, run Run) ([]Job, error) 
 	return result.Jobs, nil
 }
 
+<<<<<<< HEAD
 func PromptForRun(cs *iostreams.ColorScheme, client *api.Client, repo ghrepo.Interface) (string, error) {
 	// TODO arbitrary limit
 	runs, err := GetRuns(client, repo, 10)
@@ -206,19 +351,32 @@ func PromptForRun(cs *iostreams.ColorScheme, client *api.Client, repo ghrepo.Int
 		return "", err
 	}
 
+=======
+func PromptForRun(cs *iostreams.ColorScheme, runs []Run) (string, error) {
+>>>>>>> origin/bad-branch
 	var selected int
 
 	candidates := []string{}
 
 	for _, run := range runs {
+<<<<<<< HEAD
 		symbol := Symbol(cs, run.Status, run.Conclusion)
 		candidates = append(candidates,
+=======
+		symbol, _ := Symbol(cs, run.Status, run.Conclusion)
+		candidates = append(candidates,
+			// TODO truncate commit message, long ones look terrible
+>>>>>>> origin/bad-branch
 			fmt.Sprintf("%s %s, %s (%s)", symbol, run.CommitMsg(), run.Name, run.HeadBranch))
 	}
 
 	// TODO consider custom filter so it's fuzzier. right now matches start anywhere in string but
 	// become contiguous
+<<<<<<< HEAD
 	err = prompt.SurveyAskOne(&survey.Select{
+=======
+	err := prompt.SurveyAskOne(&survey.Select{
+>>>>>>> origin/bad-branch
 		Message:  "Select a workflow run",
 		Options:  candidates,
 		PageSize: 10,
@@ -244,6 +402,7 @@ func GetRun(client *api.Client, repo ghrepo.Interface, runID string) (*Run, erro
 	return &result, nil
 }
 
+<<<<<<< HEAD
 func Symbol(cs *iostreams.ColorScheme, status Status, conclusion Conclusion) string {
 	if status == Completed {
 		switch conclusion {
@@ -257,4 +416,90 @@ func Symbol(cs *iostreams.ColorScheme, status Status, conclusion Conclusion) str
 	}
 
 	return cs.Yellow("-")
+=======
+type colorFunc func(string) string
+
+func Symbol(cs *iostreams.ColorScheme, status Status, conclusion Conclusion) (string, colorFunc) {
+	noColor := func(s string) string { return s }
+	if status == Completed {
+		switch conclusion {
+		case Success:
+			return cs.SuccessIconWithColor(noColor), cs.Green
+		case Skipped, Cancelled, Neutral:
+			return cs.SuccessIconWithColor(noColor), cs.Gray
+		default:
+			return cs.FailureIconWithColor(noColor), cs.Red
+		}
+	}
+
+	return "-", cs.Yellow
+}
+
+func PullRequestForRun(client *api.Client, repo ghrepo.Interface, run Run) (int, error) {
+	type response struct {
+		Repository struct {
+			PullRequests struct {
+				Nodes []struct {
+					Number         int
+					HeadRepository struct {
+						Owner struct {
+							Login string
+						}
+						Name string
+					}
+				}
+			}
+		}
+		Number int
+	}
+
+	variables := map[string]interface{}{
+		"owner":       repo.RepoOwner(),
+		"repo":        repo.RepoName(),
+		"headRefName": run.HeadBranch,
+	}
+
+	query := `
+		query PullRequestForRun($owner: String!, $repo: String!, $headRefName: String!) {
+			repository(owner: $owner, name: $repo) {
+				pullRequests(headRefName: $headRefName, first: 1, orderBy: { field: CREATED_AT, direction: DESC }) {
+					nodes {
+						number
+						headRepository {
+							owner {
+								login
+							}
+							name
+						}
+					}
+				}
+			}
+		}`
+
+	var resp response
+
+	err := client.GraphQL(repo.RepoHost(), query, variables, &resp)
+	if err != nil {
+		return -1, err
+	}
+
+	prs := resp.Repository.PullRequests.Nodes
+	if len(prs) == 0 {
+		return -1, fmt.Errorf("no matching PR found for %s", run.HeadBranch)
+	}
+
+	number := -1
+
+	for _, pr := range prs {
+		if pr.HeadRepository.Owner.Login == run.HeadRepository.Owner.Login && pr.HeadRepository.Name == run.HeadRepository.Name {
+			number = pr.Number
+		}
+	}
+
+	if number == -1 {
+		return number, fmt.Errorf("no matching PR found for %s", run.HeadBranch)
+	}
+
+	return number, nil
+>>>>>>> origin/bad-branch
 }

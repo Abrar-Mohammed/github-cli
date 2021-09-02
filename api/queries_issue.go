@@ -24,44 +24,76 @@ type IssuesAndTotalCount struct {
 }
 
 type Issue struct {
-	ID        string
-	Number    int
-	Title     string
-	URL       string
-	State     string
-	Closed    bool
-	Body      string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Comments  Comments
-	Author    Author
-	Assignees struct {
-		Nodes []struct {
-			Login string
-		}
-		TotalCount int
+	ID             string
+	Number         int
+	Title          string
+	URL            string
+	State          string
+	Closed         bool
+	Body           string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Comments       Comments
+	Author         Author
+	Assignees      Assignees
+	Labels         Labels
+	ProjectCards   ProjectCards
+	Milestone      Milestone
+	ReactionGroups ReactionGroups
+}
+
+type Assignees struct {
+	Nodes []struct {
+		Login string
 	}
-	Labels struct {
-		Nodes []struct {
+	TotalCount int
+}
+
+func (a Assignees) Logins() []string {
+	logins := make([]string, len(a.Nodes))
+	for i, a := range a.Nodes {
+		logins[i] = a.Login
+	}
+	return logins
+}
+
+type Labels struct {
+	Nodes []struct {
+		Name string
+	}
+	TotalCount int
+}
+
+func (l Labels) Names() []string {
+	names := make([]string, len(l.Nodes))
+	for i, l := range l.Nodes {
+		names[i] = l.Name
+	}
+	return names
+}
+
+type ProjectCards struct {
+	Nodes []struct {
+		Project struct {
 			Name string
 		}
-		TotalCount int
-	}
-	ProjectCards struct {
-		Nodes []struct {
-			Project struct {
-				Name string
-			}
-			Column struct {
-				Name string
-			}
+		Column struct {
+			Name string
 		}
-		TotalCount int
 	}
-	Milestone struct {
-		Title string
+	TotalCount int
+}
+
+func (p ProjectCards) ProjectNames() []string {
+	names := make([]string, len(p.Nodes))
+	for i, c := range p.Nodes {
+		names[i] = c.Project.Name
 	}
-	ReactionGroups ReactionGroups
+	return names
+}
+
+type Milestone struct {
+	Title string
 }
 
 type IssuesDisabledError struct {
@@ -201,7 +233,7 @@ func IssueStatus(client *Client, repo ghrepo.Interface, currentUsername string) 
 	return &payload, nil
 }
 
-func IssueList(client *Client, repo ghrepo.Interface, state string, labels []string, assigneeString string, limit int, authorString string, mentionString string, milestoneString string) (*IssuesAndTotalCount, error) {
+func IssueList(client *Client, repo ghrepo.Interface, state string, assigneeString string, limit int, authorString string, mentionString string, milestoneString string) (*IssuesAndTotalCount, error) {
 	var states []string
 	switch state {
 	case "open", "":
@@ -215,10 +247,10 @@ func IssueList(client *Client, repo ghrepo.Interface, state string, labels []str
 	}
 
 	query := fragments + `
-	query IssueList($owner: String!, $repo: String!, $limit: Int, $endCursor: String, $states: [IssueState!] = OPEN, $labels: [String!], $assignee: String, $author: String, $mention: String, $milestone: String) {
+	query IssueList($owner: String!, $repo: String!, $limit: Int, $endCursor: String, $states: [IssueState!] = OPEN, $assignee: String, $author: String, $mention: String, $milestone: String) {
 		repository(owner: $owner, name: $repo) {
 			hasIssuesEnabled
-			issues(first: $limit, after: $endCursor, orderBy: {field: CREATED_AT, direction: DESC}, states: $states, labels: $labels, filterBy: {assignee: $assignee, createdBy: $author, mentioned: $mention, milestone: $milestone}) {
+			issues(first: $limit, after: $endCursor, orderBy: {field: CREATED_AT, direction: DESC}, states: $states, filterBy: {assignee: $assignee, createdBy: $author, mentioned: $mention, milestone: $milestone}) {
 				totalCount
 				nodes {
 					...issue
@@ -236,9 +268,6 @@ func IssueList(client *Client, repo ghrepo.Interface, state string, labels []str
 		"owner":  repo.RepoOwner(),
 		"repo":   repo.RepoName(),
 		"states": states,
-	}
-	if len(labels) > 0 {
-		variables["labels"] = labels
 	}
 	if assigneeString != "" {
 		variables["assignee"] = assigneeString
@@ -421,6 +450,80 @@ func IssueByNumber(client *Client, repo ghrepo.Interface, number int) (*Issue, e
 	return &resp.Repository.Issue, nil
 }
 
+func IssueSearch(client *Client, repo ghrepo.Interface, searchQuery string, limit int) (*IssuesAndTotalCount, error) {
+	query := fragments +
+		`query IssueSearch($repo: String!, $owner: String!, $type: SearchType!, $limit: Int, $after: String, $query: String!) {
+			repository(name: $repo, owner: $owner) {
+				hasIssuesEnabled
+			}
+			search(type: $type, last: $limit, after: $after, query: $query) {
+				issueCount
+				nodes { ...issue }
+				pageInfo {
+					hasNextPage
+					endCursor
+				}
+			}
+		}`
+
+	type response struct {
+		Repository struct {
+			HasIssuesEnabled bool
+		}
+		Search struct {
+			IssueCount int
+			Nodes      []Issue
+			PageInfo   struct {
+				HasNextPage bool
+				EndCursor   string
+			}
+		}
+	}
+
+	perPage := min(limit, 100)
+	searchQuery = fmt.Sprintf("repo:%s/%s %s", repo.RepoOwner(), repo.RepoName(), searchQuery)
+
+	variables := map[string]interface{}{
+		"owner": repo.RepoOwner(),
+		"repo":  repo.RepoName(),
+		"type":  "ISSUE",
+		"limit": perPage,
+		"query": searchQuery,
+	}
+
+	ic := IssuesAndTotalCount{}
+
+loop:
+	for {
+		var resp response
+		err := client.GraphQL(repo.RepoHost(), query, variables, &resp)
+		if err != nil {
+			return nil, err
+		}
+
+		if !resp.Repository.HasIssuesEnabled {
+			return nil, fmt.Errorf("the '%s' repository has disabled issues", ghrepo.FullName(repo))
+		}
+
+		ic.TotalCount = resp.Search.IssueCount
+
+		for _, issue := range resp.Search.Nodes {
+			ic.Issues = append(ic.Issues, issue)
+			if len(ic.Issues) == limit {
+				break loop
+			}
+		}
+
+		if !resp.Search.PageInfo.HasNextPage {
+			break
+		}
+		variables["after"] = resp.Search.PageInfo.EndCursor
+		variables["perPage"] = min(perPage, limit-len(ic.Issues))
+	}
+
+	return &ic, nil
+}
+
 func IssueClose(client *Client, repo ghrepo.Interface, issue Issue) error {
 	var mutation struct {
 		CloseIssue struct {
@@ -485,6 +588,20 @@ func IssueDelete(client *Client, repo ghrepo.Interface, issue Issue) error {
 	gql := graphQLClient(client.http, repo.RepoHost())
 	err := gql.MutateNamed(context.Background(), "IssueDelete", &mutation, variables)
 
+	return err
+}
+
+func IssueUpdate(client *Client, repo ghrepo.Interface, params githubv4.UpdateIssueInput) error {
+	var mutation struct {
+		UpdateIssue struct {
+			Issue struct {
+				ID string
+			}
+		} `graphql:"updateIssue(input: $input)"`
+	}
+	variables := map[string]interface{}{"input": params}
+	gql := graphQLClient(client.http, repo.RepoHost())
+	err := gql.MutateNamed(context.Background(), "IssueUpdate", &mutation, variables)
 	return err
 }
 
